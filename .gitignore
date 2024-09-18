@@ -1,2 +1,4 @@
 notes.txt
 *testing-only*
+*.bin
+*.exe
