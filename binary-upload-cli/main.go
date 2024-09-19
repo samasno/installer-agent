@@ -145,7 +145,6 @@ func uploadBinary(args []string) (string, error) {
 }
 
 func setLatest(args []string) (string, error) {
-	// args - os arch version
 	if len(args) < 3 {
 		return "", fmt.Errorf("expected 3 args got %d. need $OS $ARCHITECTURE $VERSION", len(args))
 	}
@@ -206,11 +205,11 @@ func getOsAndArch(fp string) (string, string, error) {
 	mac, err := macho.NewFile(f)
 	if err != nil {
 		log.Println(err.Error())
-		log.Println("not a macos binary")
+		log.Println("not a darwin binary")
 	} else {
 		defer f.Close()
 		defer mac.Close()
-		return "macos", mac.Cpu.String(), nil
+		return "darwin", mac.Cpu.String(), nil
 	}
 
 	return "", "", errors.New("Unsupported operating system")
