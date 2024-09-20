@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -16,31 +21,91 @@ var FILES_DIR = "./testing-only" // will use default as user directory if not pa
 
 // TODOs
 // add use tls/autocert flag later
-// add logging
 // add auth for post and puts
-// add some mutexes
+// graceful shutdown
+
+var logger *log.Logger
 
 func main() {
+	var out string
+	var port int
+
+	flag.StringVar(&out, "out", "", "path to log file")
+	flag.IntVar(&port, "port", 8080, "port to run server")
+	// port int
+
+	flag.Parse()
+
+	logFlags := log.Ldate | log.Ltime
+	if out == "" {
+		logger = log.New(os.Stdout, "", logFlags)
+	} else {
+		logFile, err := os.OpenFile(out, os.O_CREATE|os.O_RDWR, 0774)
+		if err != nil {
+			log.Println("failed to open log file")
+			log.Fatal(err.Error())
+		}
+
+		logger = log.New(logFile, "", logFlags)
+	}
+
 	err := os.MkdirAll(FILES_DIR, 0777)
 	if err != nil {
 		panic(err.Error())
 	}
 
+	srv := runServer(port)
+
+	k := make(chan os.Signal)
+
+	signal.Notify(k, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGINT)
+
+	<-k
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(10)*time.Second)
+	defer cancel()
+
+	err = srv.Shutdown(ctx)
+	if err != nil {
+
+	}
+	logger.Println("server closed")
+}
+
+func runServer(port int) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{OS}/{ARCH}/latest", handleGetLatest)
 	mux.HandleFunc("PUT /{OS}/{ARCH}/latest/{VER}", handleUpdateLatest)
 	mux.HandleFunc("GET /{OS}/{ARCH}/checksum/{VER}", handleGetChecksum)
-	mux.HandleFunc("POST /{OS}/{ARCH}/upload", handleUploadBinary)
-	mux.HandleFunc("GET /{OS}/{ARCH}/download/{VER}", handleDownloadBinary)
+	mux.HandleFunc("POST /{OS}/{ARCH}/upload", logRequests(handleUploadBinary))
+	mux.HandleFunc("GET /{OS}/{ARCH}/download/{VER}", logRequests(handleDownloadBinary))
 	mux.HandleFunc("GET /{$}", handleHome)
 
-	srv := http.Server{
-		Addr:    ":8080",
+	srv := &http.Server{
+		Addr:    fmt.Sprintf("0.0.0.0:%d", port),
 		Handler: mux,
 	}
 
-	srv.ListenAndServe()
-	println("closing server")
+	go func(srv *http.Server) {
+		if err := srv.ListenAndServe(); err != nil {
+			if err == http.ErrServerClosed {
+				logger.Println("server shutdown gracefully")
+				return
+			}
+
+			logger.Println("server not shutdown gracefully")
+		}
+	}(srv)
+
+	return srv
+}
+
+func logRequests(h func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req := fmt.Sprintf("origin: %s; path: %s; method: %s;", r.RemoteAddr, r.URL.Path, r.Method)
+		logger.Println(req)
+		h(w, r)
+	}
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
