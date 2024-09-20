@@ -32,7 +32,6 @@ func main() {
 
 	flag.StringVar(&out, "out", "", "path to log file")
 	flag.IntVar(&port, "port", 8080, "port to run server")
-	// port int
 
 	flag.Parse()
 
@@ -49,7 +48,7 @@ func main() {
 		logger = log.New(logFile, "", logFlags)
 	}
 
-	err := os.MkdirAll(FILES_DIR, 0777)
+	err := os.MkdirAll(FILES_DIR, 0774)
 	if err != nil {
 		panic(err.Error())
 	}
