@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -17,36 +20,33 @@ import (
 	"time"
 )
 
-var FILES_DIR = "./testing-only" // will use default as user directory if not passed in flags later
-
-// add use tls/autocert flag later
-// add auth for post and puts
+var FILES_DIR = "./files"
+var CERT string
+var OUT string
 
 var logger *log.Logger
 
 func main() {
-	var out string
 	var port int
 	var files string
-	var cert string
-	var key string
-	var tls bool
 
-	flag.StringVar(&out, "out", "", "path to log file")
-	flag.StringVar(&files, "files", "./files", "directory path to hold server files")
-	flag.StringVar(&cert, "cert", "", "path to tls cert that will be used as certificate authority")
-	flag.StringVar(&key, "key", "", "path to key file use for tls authentication for clients")
-	flag.BoolVar(&tls, "tls", false, "use tls for authentication for all put and post requests")
+	flag.StringVar(&OUT, "out", "", "path to log file")
+	flag.StringVar(&files, "files", "", "directory path to hold server files")
+	flag.StringVar(&CERT, "cert", "", "path to x509 cert that will be used as certificate authority")
 
 	flag.IntVar(&port, "port", 8080, "port to run server")
 
 	flag.Parse()
 
+	if files != "" {
+		FILES_DIR = files
+	}
+
 	logFlags := log.Ldate | log.Ltime
-	if out == "" {
+	if OUT == "" {
 		logger = log.New(os.Stdout, "", logFlags)
 	} else {
-		logFile, err := os.OpenFile(out, os.O_CREATE|os.O_RDWR, 0774)
+		logFile, err := os.OpenFile(OUT, os.O_CREATE|os.O_RDWR, 0774)
 		if err != nil {
 			log.Println("failed to open log file")
 			log.Fatal(err.Error())
@@ -93,12 +93,13 @@ func main() {
 }
 
 func runServer(port int) *http.Server {
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{OS}/{ARCH}/latest", handleGetLatest)
 	mux.HandleFunc("PUT /{OS}/{ARCH}/latest/{VER}", handleUpdateLatest)
 	mux.HandleFunc("GET /{OS}/{ARCH}/checksum/{VER}", handleGetChecksum)
-	mux.HandleFunc("POST /{OS}/{ARCH}/upload", logRequests(handleUploadBinary))
-	mux.HandleFunc("GET /{OS}/{ARCH}/download/{VER}", logRequests(handleDownloadBinary))
+	mux.HandleFunc("POST /{OS}/{ARCH}/upload", requireCert(logRequests(handleUploadBinary)))
+	mux.HandleFunc("GET /{OS}/{ARCH}/download/{VER}", requireCert(logRequests(handleDownloadBinary)))
 	mux.HandleFunc("GET /{$}", handleHome)
 
 	srv := &http.Server{
@@ -128,6 +129,55 @@ func logRequests(h func(http.ResponseWriter, *http.Request)) func(http.ResponseW
 	}
 }
 
+func requireCert(h func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	caPem, err := os.ReadFile(CERT)
+	if err != nil {
+		logger.Println("failed to open certificate authority")
+		logger.Fatal(err.Error())
+	}
+
+	roots := x509.NewCertPool()
+
+	roots.AppendCertsFromPEM(caPem)
+
+	options := x509.VerifyOptions{
+		Roots: roots,
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := r.Header.Get("X-Client-Certificate")
+		if p == "" {
+			replyMessage(w, http.StatusUnauthorized, "no valid certificate in header")
+			return
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(p)
+		if err != nil {
+			replyMessage(w, http.StatusBadRequest, "bad encoding")
+			return
+		}
+
+		block, _ := pem.Decode(decoded)
+		if block == nil {
+			replyMessage(w, http.StatusBadRequest, "no blocks decoded")
+			return
+		}
+
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			replyMessage(w, http.StatusInternalServerError, "could not parse certificate")
+			return
+
+		}
+		_, err = cert.Verify(options)
+		if err != nil {
+			replyMessage(w, http.StatusUnauthorized, "this is not an authorized certificate")
+			return
+		}
+
+		h(w, r)
+	}
+}
+
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	replyMessage(w, http.StatusOK, "home page")
@@ -140,7 +190,7 @@ func handleGetLatest(w http.ResponseWriter, r *http.Request) {
 
 	p := filepath.Join(FILES_DIR, OS, ARCH, "latest")
 
-	b, err := readFile(p)
+	b, err := os.ReadFile(p)
 	if err != nil {
 		replyMessage(w, http.StatusNotFound, "not found")
 		return
