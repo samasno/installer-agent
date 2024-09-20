@@ -35,25 +35,51 @@ var DEFAULT_BIN_NAME = "installer-agent"
 var WINDOWS_BIN_NAME = "installer-agent.exe"
 var PID int
 var CMD = []string{}
+var OUT string
 
-// stack for versions
-// improve logging
-// factor out some globals if possible
-// pass args flag for child process
+var logger *log.Logger
+
+type flagArray []string
+
+func (f *flagArray) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
+func (f *flagArray) String() string {
+	return fmt.Sprintf("%v", *f)
+}
 
 func main() {
-
+	var childArgs flagArray
+	var childFlags flagArray
+	var childEnv flagArray
 	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current user directory.")
 	flag.StringVar(&BINARY_SERVER_URL, "host", "http://localhost:8080/", "url for binary server")
+	flag.StringVar(&OUT, "out", "", "path to log file")
+	flag.Var(&childArgs, "arg", "args to pass to child process.")
+	flag.Var(&childFlags, "flag", "flags to be passed to child. should be passed as key value pair \"key=value\". flags will be passed before any positional arguments")
+	flag.Var(&childEnv, "env", "flags to be passed to child. should be passed as key value pair \"key=value\"")
+
 	flag.Parse()
 
-	PID = os.Getpid()
-	log.SetPrefix(fmt.Sprintf("PID %d  ", PID))
+	logFlags := log.Ldate | log.Ltime
+	logPrefix := fmt.Sprintf("PID %d  ", os.Getpid())
+	if OUT == "" {
+		logger = log.New(os.Stdout, logPrefix, logFlags)
+	} else {
+		logFile, err := os.OpenFile(OUT, os.O_CREATE|os.O_RDWR, 0774)
+		if err != nil {
+			log.Printf("failed to open log file \"%s\"", OUT)
+			log.Fatal(err.Error())
+		}
+		logger = log.New(logFile, logPrefix, logFlags)
+	}
 
 	var err error
 	OS, ARCH, err = getOsAndArch()
 	if err != nil {
-		log.Println("failed to identify operating system and architecture. using default linux ELFCLASS64")
+		logger.Println("failed to identify operating system and architecture. using default linux ELFCLASS64")
 	}
 
 	if BIN_DIR == "" {
@@ -70,16 +96,25 @@ func main() {
 		BIN_NAME = DEFAULT_BIN_NAME
 	default:
 		BIN_NAME = DEFAULT_BIN_NAME
-		log.Printf("operating system \"%s\" might not be supported", OS)
+		logger.Printf("operating system \"%s\" might not be supported", OS)
 	}
 
 	BIN_PATH = path.Join(BIN_DIR, BIN_NAME)
 
-	CMD = append(CMD, BIN_PATH) // append args as well
+	CMD = append(CMD, BIN_PATH)
+
+	cfs := []string{}
+	for _, f := range childFlags {
+		cfs = append(cfs, "--"+f)
+	}
+
+	CMD = append(CMD, cfs...)
+
+	CMD = append(CMD, childArgs...)
 
 	_, err = url.Parse(BINARY_SERVER_URL)
 	if err != nil {
-		log.Println(err.Error())
+		logger.Println(err.Error())
 		panic(err.Error())
 	}
 
@@ -93,8 +128,8 @@ func main() {
 	for {
 		updated, err := stayUpdated()
 		if err != nil {
-			log.Println("error fetching update")
-			log.Println(err.Error())
+			logger.Println("error fetching update")
+			logger.Println(err.Error())
 		}
 
 		if !updated {
@@ -104,8 +139,8 @@ func main() {
 
 		RUNNING, err = SwapNewJob(RUNNING, CMD...)
 		if err != nil {
-			log.Println("Failed to restart running process")
-			log.Fatal(err.Error())
+			logger.Println("Failed to restart running process")
+			logger.Fatal(err.Error())
 		}
 	}
 }
@@ -117,7 +152,7 @@ func stayUpdated() (bool, error) {
 	}
 
 	if latest == "" {
-		log.Println("no updates")
+		logger.Println("no updates")
 		return false, nil
 	}
 
@@ -126,31 +161,31 @@ func stayUpdated() (bool, error) {
 		return false, err
 	}
 
-	log.Printf("download new binary to %s checksum %s\n", tmpPath, tmpChecksum)
+	logger.Printf("download new binary to %s checksum %s\n", tmpPath, tmpChecksum)
 	if tmpChecksum != latestChecksum {
 		err := os.RemoveAll(tmpPath)
 		if err != nil {
-			log.Printf("failed to remove file %s\n", tmpPath)
+			logger.Printf("failed to remove file %s\n", tmpPath)
 		} else {
-			log.Printf("removed file %s\n", tmpPath)
+			logger.Printf("removed file %s\n", tmpPath)
 		}
 		return false, errors.New("checksum of downloaded binary does not match latest version")
 	}
 
-	log.Printf("checksums matched, moving %s to %s\n", tmpPath, BIN_PATH)
+	logger.Printf("checksums matched, moving %s to %s\n", tmpPath, BIN_PATH)
 	err = os.Rename(tmpPath, BIN_PATH)
 	if err != nil {
-		log.Println("faile to rename new binary file")
+		logger.Println("faile to rename new binary file")
 		return false, err
 	}
 
 	err = os.Chmod(BIN_PATH, 0777)
 	if err != nil {
-		log.Println("failed to update permissions for new binary")
+		logger.Println("failed to update permissions for new binary")
 		return false, err
 	}
 
-	log.Println("binary succesfully updated")
+	logger.Println("binary succesfully updated")
 	return true, nil
 }
 
@@ -209,8 +244,8 @@ func (j *Job) Run() {
 			j.cmd.Stderr = os.Stderr
 
 			if err := j.cmd.Run(); err != nil && !j.kill {
-				log.Println("process crashed")
-				log.Println(err.Error())
+				logger.Println("process crashed")
+				logger.Println(err.Error())
 				time.Sleep(time.Duration(2) * time.Second)
 				continue
 			}
@@ -270,7 +305,7 @@ func checkForUpdate() (string, string, error) {
 }
 
 func fetch(u string) (string, error) {
-	log.Println("fetching " + u)
+	logger.Println("fetching " + u)
 	req, err := http.NewRequest(http.MethodGet, u, &bytes.Buffer{})
 	if err != nil {
 		return "", err
@@ -379,8 +414,8 @@ func getOsAndArch() (string, string, error) {
 
 	e, err := elf.NewFile(f)
 	if err != nil {
-		log.Println(err.Error())
-		log.Println("not a linux binary")
+		logger.Println(err.Error())
+		logger.Println("not a linux binary")
 	} else {
 		defer f.Close()
 		defer e.Close()
@@ -389,8 +424,8 @@ func getOsAndArch() (string, string, error) {
 
 	w, err := pe.Open(x)
 	if err != nil {
-		log.Println(err.Error())
-		log.Println("not a windows executable")
+		logger.Println(err.Error())
+		logger.Println("not a windows executable")
 	} else {
 		defer w.Close()
 		warch := strconv.Itoa(int(w.FileHeader.Machine))
@@ -400,8 +435,8 @@ func getOsAndArch() (string, string, error) {
 	f, err = os.Open(x)
 	mac, err := macho.NewFile(f)
 	if err != nil {
-		log.Println(err.Error())
-		log.Println("not a darwin binary")
+		logger.Println(err.Error())
+		logger.Println("not a darwin binary")
 	} else {
 		defer f.Close()
 		defer mac.Close()
