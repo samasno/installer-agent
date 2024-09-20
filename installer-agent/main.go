@@ -239,14 +239,21 @@ func RunJob(command ...string) (*Job, error) { //
 func (j *Job) Run() {
 	go func() {
 		for {
+			if j.kill {
+				break
+			}
+
 			j.cmd = exec.Command(j.entry, j.args...)
 			j.cmd.Stdout = os.Stdout
 			j.cmd.Stderr = os.Stderr
 
-			if err := j.cmd.Run(); err != nil && !j.kill {
-				logger.Println("process crashed")
-				logger.Println(err.Error())
-				time.Sleep(time.Duration(2) * time.Second)
+			err := j.cmd.Run()
+			if err != nil && !j.kill {
+				if j.cmd.ProcessState.ExitCode() != 0 {
+					logger.Println("process crashed")
+					logger.Println(err.Error())
+					time.Sleep(time.Duration(250) * time.Millisecond)
+				}
 				continue
 			}
 			break
@@ -257,6 +264,10 @@ func (j *Job) Run() {
 }
 
 func (j *Job) Stop() error {
+	if j == nil {
+		return nil
+	}
+
 	j.kill = true
 	err := j.cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
@@ -264,17 +275,6 @@ func (j *Job) Stop() error {
 	}
 
 	<-j.Ok
-
-	return nil
-}
-
-func (j *Job) Restart() error {
-	err := j.Stop()
-	if err != nil {
-		return err
-	}
-
-	RunJob(CMD...)
 
 	return nil
 }
