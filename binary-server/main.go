@@ -19,18 +19,25 @@ import (
 
 var FILES_DIR = "./testing-only" // will use default as user directory if not passed in flags later
 
-// TODOs
 // add use tls/autocert flag later
 // add auth for post and puts
-// graceful shutdown
 
 var logger *log.Logger
 
 func main() {
 	var out string
 	var port int
+	var files string
+	var cert string
+	var key string
+	var tls bool
 
 	flag.StringVar(&out, "out", "", "path to log file")
+	flag.StringVar(&files, "files", "./files", "directory path to hold server files")
+	flag.StringVar(&cert, "cert", "", "path to tls cert that will be used as certificate authority")
+	flag.StringVar(&key, "key", "", "path to key file use for tls authentication for clients")
+	flag.BoolVar(&tls, "tls", false, "use tls for authentication for all put and post requests")
+
 	flag.IntVar(&port, "port", 8080, "port to run server")
 
 	flag.Parse()
@@ -48,7 +55,7 @@ func main() {
 		logger = log.New(logFile, "", logFlags)
 	}
 
-	err := os.MkdirAll(FILES_DIR, 0774)
+	err := os.MkdirAll(FILES_DIR, 0744)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -64,11 +71,25 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(10)*time.Second)
 	defer cancel()
 
-	err = srv.Shutdown(ctx)
-	if err != nil {
+	done := make(chan bool)
 
+	go func() {
+		err = srv.Shutdown(ctx)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+
+		done <- true
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Println("failed to shutdown server in time")
+		os.Exit(1)
+	case <-done:
+		log.Println("server shutdown")
+		os.Exit(0)
 	}
-	logger.Println("server closed")
 }
 
 func runServer(port int) *http.Server {
