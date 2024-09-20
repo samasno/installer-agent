@@ -2,3 +2,8 @@ notes.txt
 *testing-only*
 *.bin
 *.exe
+*.crt
+*.key
+*.csr
+*.pem
+*.cer
