@@ -25,8 +25,8 @@ import (
 )
 
 var BINARY_SERVER_URL string
-var OS string
-var ARCH string
+var OS = "linux"
+var ARCH = "ELFCLASS64"
 var BIN_DIR string
 var BIN_PATH string
 var CURRENT_PROCESS exec.Cmd
@@ -34,25 +34,27 @@ var BIN_NAME string
 var DEFAULT_BIN_NAME = "installer-agent"
 var WINDOWS_BIN_NAME = "installer-agent.exe"
 var PID int
-var RUNNING_JOB *Job = nil
 var CMD = []string{}
 
-var SUPPORTED_OS = []string{"windows", "darwin", "linux"}
+// stack for versions
+// improve logging
+// factor out some globals if possible
+// pass args flag for child process
 
 func main() {
+
+	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current user directory.")
+	flag.StringVar(&BINARY_SERVER_URL, "host", "http://localhost:8080/", "url for binary server")
+	flag.Parse()
+
 	PID = os.Getpid()
 	log.SetPrefix(fmt.Sprintf("PID %d  ", PID))
 
 	var err error
 	OS, ARCH, err = getOsAndArch()
 	if err != nil {
-		panic("failed to identify current runtime")
+		log.Println("failed to identify operating system and architecture. using default linux ELFCLASS64")
 	}
-
-	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current user directory.")
-	flag.StringVar(&BINARY_SERVER_URL, "host", "http://localhost:8080/", "url for binary server")
-	// make args flags that will be appended to
-	flag.Parse()
 
 	if BIN_DIR == "" {
 		BIN_DIR, err = os.Getwd()
@@ -67,13 +69,14 @@ func main() {
 	case "linux", "darwin":
 		BIN_NAME = DEFAULT_BIN_NAME
 	default:
-		log.Fatalf("operating system \"%s\" not supported", OS)
+		BIN_NAME = DEFAULT_BIN_NAME
+		log.Printf("operating system \"%s\" might not be supported", OS)
 	}
 
 	BIN_PATH = path.Join(BIN_DIR, BIN_NAME)
 
-	CMD = append(CMD, BIN_PATH)
-	println(BIN_PATH, CMD)
+	CMD = append(CMD, BIN_PATH) // append args as well
+
 	_, err = url.Parse(BINARY_SERVER_URL)
 	if err != nil {
 		log.Println(err.Error())
@@ -85,7 +88,7 @@ func main() {
 		panic(err.Error())
 	}
 
-	RUNNING_JOB, err = RunJob(CMD...)
+	RUNNING, err := RunJob(CMD...)
 
 	for {
 		updated, err := stayUpdated()
@@ -99,7 +102,7 @@ func main() {
 			continue
 		}
 
-		RUNNING_JOB, err = RunJob(CMD...)
+		RUNNING, err = SwapNewJob(RUNNING, CMD...)
 		if err != nil {
 			log.Println("Failed to restart running process")
 			log.Fatal(err.Error())
@@ -108,14 +111,12 @@ func main() {
 }
 
 func stayUpdated() (bool, error) {
-	log.Println("fetching latest version and checksum")
 	latest, latestChecksum, err := checkForUpdate()
 	if err != nil {
 		return false, err
 	}
 
 	if latest == "" {
-		log.Println("current binary checksum matches latest version")
 		log.Println("no updates")
 		return false, nil
 	}
@@ -162,14 +163,20 @@ type Job struct {
 	mtx   sync.Mutex
 }
 
-func RunJob(command ...string) (*Job, error) {
-	if RUNNING_JOB != nil {
-		err := RUNNING_JOB.Stop()
-		if err != nil {
-			return nil, err
-		}
+func SwapNewJob(old *Job, cmd ...string) (*Job, error) {
+	if old != nil {
+		old.Stop()
 	}
 
+	j, err := RunJob(cmd...)
+	if err != nil {
+		return nil, err
+	}
+
+	return j, nil
+}
+
+func RunJob(command ...string) (*Job, error) { //
 	if len(command) < 1 {
 		return nil, errors.New("new job requires at least one command")
 	}
