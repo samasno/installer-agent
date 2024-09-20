@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"debug/elf"
 	"debug/macho"
@@ -20,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -34,6 +34,8 @@ var BIN_NAME string
 var DEFAULT_BIN_NAME = "installer-agent"
 var WINDOWS_BIN_NAME = "installer-agent.exe"
 var PID int
+var RUNNING_JOB *Job = nil
+var CMD = []string{}
 
 var SUPPORTED_OS = []string{"windows", "darwin", "linux"}
 
@@ -47,26 +49,31 @@ func main() {
 		panic("failed to identify current runtime")
 	}
 
-	flag.StringVar(&BIN_DIR, "bindir", "./", "path to directory where binary file is stored. defaults to current directory.")
+	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current user directory.")
 	flag.StringVar(&BINARY_SERVER_URL, "host", "http://localhost:8080/", "url for binary server")
+	// make args flags that will be appended to
 	flag.Parse()
 
-	BIN_PATH, err = os.Executable()
-	if err != nil {
-		panic(err.Error())
-	}
-
-	supported := false
-	for _, oss := range SUPPORTED_OS {
-		if OS == oss {
-			supported = true
+	if BIN_DIR == "" {
+		BIN_DIR, err = os.Getwd()
+		if err != nil {
+			panic("couldn't find working directory")
 		}
 	}
 
-	if !supported {
-		log.Println("operating system not officially supported")
+	switch OS {
+	case "windows":
+		BIN_NAME = WINDOWS_BIN_NAME
+	case "linux", "darwin":
+		BIN_NAME = DEFAULT_BIN_NAME
+	default:
+		log.Fatalf("operating system \"%s\" not supported", OS)
 	}
 
+	BIN_PATH = path.Join(BIN_DIR, BIN_NAME)
+
+	CMD = append(CMD, BIN_PATH)
+	println(BIN_PATH, CMD)
 	_, err = url.Parse(BINARY_SERVER_URL)
 	if err != nil {
 		log.Println(err.Error())
@@ -78,56 +85,24 @@ func main() {
 		panic(err.Error())
 	}
 
-	srvDead := make(chan bool)
-	srv := runServer(srvDead)
+	RUNNING_JOB, err = RunJob(CMD...)
 
-monitorLoop:
 	for {
-		select {
-		case <-srvDead:
-			time.Sleep(time.Duration(3) * time.Second)
-			srv = runServer(srvDead)
+		updated, err := stayUpdated()
+		if err != nil {
+			log.Println("error fetching update")
+			log.Println(err.Error())
+		}
 
-		default:
-			log.Printf("starting update cycle")
-			updated, err := stayUpdated()
-			if err != nil {
-				log.Printf("Update failed: %s\n", err.Error())
-			}
+		if !updated {
+			time.Sleep(time.Duration(5) * time.Second)
+			continue
+		}
 
-			if !updated {
-				time.Sleep(time.Duration(5) * time.Second)
-				continue
-			}
-			if updated {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(10)*time.Second)
-				defer cancel()
-				done := make(chan bool)
-
-				go func(done chan bool) {
-					err := srv.Shutdown(ctx)
-					if err != nil {
-						log.Println("failed to shutdown server.")
-						log.Fatal(err.Error())
-					}
-					log.Println("server shut down successfully")
-					done <- true
-				}(done)
-
-				select {
-				case <-ctx.Done():
-					log.Fatal("failed to shutdown server while replacing. cannot start new server")
-				case <-done:
-					err = startSuccessorProcess()
-					if err != nil {
-						log.Println(err.Error())
-						log.Println("failed to start successor process on new update. will try again next update cycle")
-						continue
-					}
-					log.Println("successor process launched, breaking monitoring loop")
-					break monitorLoop
-				}
-			}
+		RUNNING_JOB, err = RunJob(CMD...)
+		if err != nil {
+			log.Println("Failed to restart running process")
+			log.Fatal(err.Error())
 		}
 	}
 }
@@ -178,81 +153,87 @@ func stayUpdated() (bool, error) {
 	return true, nil
 }
 
-func runServer(dead chan bool) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		w.Write([]byte("home page 0"))
-	})
-	srv := &http.Server{
-		Addr:    "0.0.0.0:3333",
-		Handler: mux,
-	}
-
-	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			if err == http.ErrServerClosed {
-				return
-			}
-			log.Println(err.Error())
-			dead <- true
-		}
-	}()
-	return srv
+type Job struct {
+	cmd   *exec.Cmd
+	entry string
+	args  []string
+	kill  bool
+	Ok    chan bool
+	mtx   sync.Mutex
 }
 
-func startSuccessorProcess() error {
-	groupsUint32 := []uint32{}
-
-	groups, err := os.Getgroups()
-	if err != nil {
-		return err
+func RunJob(command ...string) (*Job, error) {
+	if RUNNING_JOB != nil {
+		err := RUNNING_JOB.Stop()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	for _, g := range groups {
-		groupsUint32 = append(groupsUint32, uint32(g))
+	if len(command) < 1 {
+		return nil, errors.New("new job requires at least one command")
 	}
 
-	// creds := &syscall.Credential{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid()), Groups: groupsUint32}
-	attr := &syscall.SysProcAttr{
-		Foreground: true,
-		// Setpgid: true,
-		// Setctty: true,
-		// Setsid:     true,
-		// Credential: &syscall.Credential{
-		// 	Gid: uint32(os.Getgid()),
-		// 	Uid: uint32(os.Getuid()),
-		// },
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
+	entry := command[0]
 
 	args := []string{}
-	if len(os.Args) > 1 {
-		args = append(args, os.Args[1:]...)
+	if len(command) > 1 {
+		args = append(args, command[1:]...)
 	}
-	cmd := exec.Command(BIN_PATH, args...)
 
-	cmd.Env = os.Environ()
-	cmd.Dir = cwd
-	cmd.SysProcAttr = attr
+	j := &Job{
+		kill:  false,
+		entry: entry,
+		args:  args,
+		Ok:    make(chan bool),
+		mtx:   sync.Mutex{},
+	}
 
-	err = cmd.Start()
+	j.Run()
+
+	return j, nil
+}
+
+func (j *Job) Run() {
+	go func() {
+		for {
+			j.cmd = exec.Command(j.entry, j.args...)
+			j.cmd.Stdout = os.Stdout
+			j.cmd.Stderr = os.Stderr
+
+			if err := j.cmd.Run(); err != nil && !j.kill {
+				log.Println("process crashed")
+				log.Println(err.Error())
+				time.Sleep(time.Duration(2) * time.Second)
+				continue
+			}
+			break
+		}
+
+		j.Ok <- true
+	}()
+}
+
+func (j *Job) Stop() error {
+	j.kill = true
+	err := j.cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
-		log.Println("starting child process failed")
 		return err
 	}
 
-	log.Printf("created new pid %d", cmd.Process.Pid)
-	err = cmd.Process.Release()
+	<-j.Ok
+
+	return nil
+}
+
+func (j *Job) Restart() error {
+	err := j.Stop()
 	if err != nil {
 		return err
 	}
 
-	log.Printf("closing predecessor pid %d", PID)
-	os.Exit(0)
+	RunJob(CMD...)
+
 	return nil
 }
 
