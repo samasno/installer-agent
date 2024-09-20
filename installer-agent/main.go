@@ -53,13 +53,12 @@ func (f *flagArray) String() string {
 func main() {
 	var childArgs flagArray
 	var childFlags flagArray
-	var childEnv flagArray
+
 	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current user directory.")
 	flag.StringVar(&BINARY_SERVER_URL, "host", "http://localhost:8080/", "url for binary server")
 	flag.StringVar(&OUT, "out", "", "path to log file")
 	flag.Var(&childArgs, "arg", "args to pass to child process.")
 	flag.Var(&childFlags, "flag", "flags to be passed to child. should be passed as key value pair \"key=value\". flags will be passed before any positional arguments")
-	flag.Var(&childEnv, "env", "flags to be passed to child. should be passed as key value pair \"key=value\"")
 
 	flag.Parse()
 
