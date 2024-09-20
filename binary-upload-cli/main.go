@@ -6,6 +6,7 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -26,10 +27,7 @@ import (
 var HOST string
 var LATEST bool
 var HELP bool
-
-//TODO better help message
-// include authentication in request
-// easy refactoring
+var CERT string
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,6 +36,7 @@ func main() {
 
 	flag.BoolVar(&HELP, "help", false, helpMessage)
 	flag.StringVar(&HOST, "host", "http://localhost:8080", "url for binary server")
+	flag.StringVar(&CERT, "cert", "", "path to cert file")
 	flag.Parse()
 
 	args := flag.Args()
@@ -127,6 +126,17 @@ func uploadBinary(args []string) (string, error) {
 	req, err := http.NewRequest(http.MethodPost, remote.String(), b)
 
 	req.Header.Set("Content-Type", mp.FormDataContentType())
+
+	if CERT != "" {
+		cert, err := os.ReadFile(CERT)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+
+		base := base64.StdEncoding.EncodeToString(cert)
+
+		req.Header.Set("X-Client-Certificate", base)
+	}
 
 	c := http.Client{Timeout: time.Duration(5) * time.Second}
 
