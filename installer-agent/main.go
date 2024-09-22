@@ -112,7 +112,6 @@ func main() {
 		BIN_NAME, err = findExecutable(APP_NAME, LIN_EXT, "./", true)
 	}
 
-	println(BIN_NAME)
 	if err != nil && !os.IsNotExist(err) {
 		logger.Println("error locating executable")
 		logger.Fatal(err.Error())
@@ -120,9 +119,7 @@ func main() {
 
 	BIN_PATH = filepath.Join(BIN_DIR, BIN_NAME)
 
-	CMD = getCommand(BIN_NAME)
-
-	fmt.Printf("%v\n", CMD)
+	CMD = getCommand(BIN_DIR, BIN_NAME, FLAGS, ARGS)
 
 	_, err = url.Parse(BINARY_SERVER_URL)
 	if err != nil {
@@ -135,14 +132,14 @@ func main() {
 		panic(err.Error())
 	}
 
-	RUNNING, err := RunJob(CMD...)
+	RUNNING, err := RunJob(OS, CMD...)
 	if err != nil {
 		log.Println("failed initial attempt to run, there may be no binary present")
 		log.Println(err.Error())
 	}
 
 	for {
-		updated, newBin, err := stayUpdated()
+		updated, newBin, err := stayUpdated(OS, ARCH, BINARY_SERVER_URL, BIN_NAME, BIN_DIR, EXT)
 		if err != nil {
 			logger.Println("error fetching update")
 			logger.Println(err.Error())
@@ -153,13 +150,13 @@ func main() {
 			continue
 		}
 
-		CMD = getCommand(newBin)
+		CMD = getCommand(BIN_DIR, newBin, FLAGS, ARGS)
 
 		oldBin := BIN_PATH
 		BIN_NAME = newBin
 		BIN_PATH = path.Join(BIN_DIR, BIN_NAME)
 
-		RUNNING, err = SwapNewJob(RUNNING, CMD...)
+		RUNNING, err = SwapNewJob(OS, RUNNING, CMD...)
 		if err != nil {
 			logger.Println("Failed to restart running process")
 			logger.Fatal(err.Error())
@@ -177,8 +174,8 @@ func main() {
 	}
 }
 
-func stayUpdated() (bool, string, error) {
-	latest, latestChecksum, err := checkForUpdate()
+func stayUpdated(osys, arch, host, bin, dir, ext string) (bool, string, error) {
+	latest, latestChecksum, err := checkForUpdate(osys, arch, host, bin)
 	if err != nil {
 		return false, "", err
 	}
@@ -188,7 +185,7 @@ func stayUpdated() (bool, string, error) {
 		return false, "", nil
 	}
 
-	tmpPath, tmpChecksum, err := downloadBinaryToTemp(latest)
+	tmpPath, tmpChecksum, err := downloadBinaryToTemp(osys, arch, host, latest)
 	if err != nil {
 		return false, "", err
 	}
@@ -204,10 +201,10 @@ func stayUpdated() (bool, string, error) {
 		return false, "", errors.New("checksum of downloaded binary does not match latest version")
 	}
 
-	logger.Printf("checksums matched, moving %s to %s\n", tmpPath, BIN_PATH)
+	newBin := fmt.Sprintf("%s%s", filepath.Base(tmpPath), ext)
+	newPath := path.Join(dir, newBin)
+	logger.Printf("checksums matched, moving %s to %s\n", tmpPath, newPath)
 
-	newBin := fmt.Sprintf("%s%s", filepath.Base(tmpPath), EXT)
-	newPath := path.Join(BIN_DIR, newBin)
 	err = os.Rename(tmpPath, newPath)
 	if err != nil {
 		logger.Println("failed to rename new binary file")
@@ -231,14 +228,15 @@ type Job struct {
 	kill  bool
 	Ok    chan bool
 	mtx   sync.Mutex
+	os    string
 }
 
-func SwapNewJob(old *Job, cmd ...string) (*Job, error) {
+func SwapNewJob(osys string, old *Job, cmd ...string) (*Job, error) {
 	if old != nil {
 		old.Stop()
 	}
 
-	j, err := RunJob(cmd...)
+	j, err := RunJob(osys, cmd...)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +244,7 @@ func SwapNewJob(old *Job, cmd ...string) (*Job, error) {
 	return j, nil
 }
 
-func RunJob(command ...string) (*Job, error) { //
+func RunJob(os string, command ...string) (*Job, error) { //
 	if len(command) < 1 {
 		return nil, errors.New("new job requires at least one command")
 	}
@@ -264,6 +262,7 @@ func RunJob(command ...string) (*Job, error) { //
 		args:  args,
 		Ok:    make(chan bool),
 		mtx:   sync.Mutex{},
+		os:    os,
 	}
 
 	j.Run()
@@ -280,7 +279,6 @@ func (j *Job) Run() {
 	err := j.cmd.Start()
 	if err != nil {
 		log.Println("failed to start job process")
-		log.Fatal(err.Error())
 	}
 
 	go func() {
@@ -310,13 +308,17 @@ func (j *Job) Run() {
 }
 
 func (j *Job) Stop() error {
-	if j == nil {
+	if j == nil || j.cmd == nil {
 		return nil
 	}
 
 	j.kill = true
 
-	if OS == "windows" {
+	if j.cmd.Process == nil {
+		return nil
+	}
+
+	if j.os == "windows" {
 		cmd := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(j.cmd.Process.Pid))
 		err := cmd.Run()
 		if err != nil {
@@ -330,7 +332,7 @@ func (j *Job) Stop() error {
 		}
 	}
 
-	time.Sleep(time.Duration(2) * 3)
+	time.Sleep(time.Duration(1) * time.Second)
 
 	<-j.Ok
 
@@ -341,19 +343,19 @@ func (j *Job) Entry() string {
 	return j.entry
 }
 
-func checkForUpdate() (string, string, error) {
-	bchx, err := binChecksum()
+func checkForUpdate(osys, arch, host, bin string) (string, string, error) {
+	bchx, err := binChecksum(bin)
 	if err != nil {
 		return "", "", err
 	}
-	u, _ := url.Parse(BINARY_SERVER_URL)
-	u.Path = path.Join(OS, ARCH, "latest")
+	u, _ := url.Parse(host)
+	u.Path = path.Join(osys, arch, "latest")
 	lv, err := fetch(u.String())
 	if err != nil {
 		return "", "", err
 	}
 
-	u.Path = path.Join(OS, ARCH, "checksum", lv)
+	u.Path = path.Join(osys, arch, "checksum", lv)
 	lvchx, err := fetch(u.String())
 	if err != nil {
 		return "", "", err
@@ -393,8 +395,8 @@ func fetch(u string) (string, error) {
 	return string(data), nil
 }
 
-func binChecksum() (string, error) {
-	bin, err := os.Open(BIN_NAME)
+func binChecksum(name string) (string, error) {
+	bin, err := os.Open(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -412,9 +414,9 @@ func binChecksum() (string, error) {
 	return chx, nil
 }
 
-func downloadBinaryToTemp(v string) (string, string, error) {
-	u, _ := url.Parse(BINARY_SERVER_URL)
-	u.Path = path.Join(OS, ARCH, "download", v)
+func downloadBinaryToTemp(osys, arch, host, v string) (string, string, error) {
+	u, _ := url.Parse(host)
+	u.Path = path.Join(osys, arch, "download", v)
 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -553,11 +555,11 @@ func findExecutable(name string, ext string, dirPath string, remove bool) (strin
 	return bin, nil
 }
 
-func getCommand(bin string) []string {
+func getCommand(dir, bin string, flags, args flagArray) []string {
 	command := []string{}
-	binPath := filepath.Join(BIN_DIR, bin)
+	binPath := filepath.Join(dir, bin)
 	command = append(command, binPath)
-	command = append(command, FLAGS...)
-	command = append(command, ARGS...)
+	command = append(command, flags...)
+	command = append(command, args...)
 	return command
 }
