@@ -98,7 +98,7 @@ func main() {
 		logger.Printf("operating system \"%s\" might not be supported", OS)
 	}
 
-	BIN_PATH = path.Join(BIN_DIR, BIN_NAME)
+	BIN_PATH = filepath.Join(BIN_DIR, BIN_NAME)
 
 	CMD = append(CMD, BIN_PATH)
 
@@ -122,7 +122,7 @@ func main() {
 		panic(err.Error())
 	}
 
-	RUNNING, err := RunJob(CMD...)
+	var RUNNING *Job
 
 	for {
 		updated, err := stayUpdated()
@@ -236,24 +236,34 @@ func RunJob(command ...string) (*Job, error) { //
 }
 
 func (j *Job) Run() {
+
+	j.cmd = exec.Command(j.entry, j.args...)
+	j.cmd.Stdout = os.Stdout
+	j.cmd.Stderr = os.Stderr
+	err := j.cmd.Start()
+	if err != nil {
+		log.Println("failed to start job process")
+		log.Fatal(err.Error())
+	}
+
 	go func() {
 		for {
-			if j.kill {
+			if j != nil && j.kill {
 				break
 			}
 
-			j.cmd = exec.Command(j.entry, j.args...)
-			j.cmd.Stdout = os.Stdout
-			j.cmd.Stderr = os.Stderr
-
-			err := j.cmd.Run()
-			if err != nil && !j.kill {
+			if err := j.cmd.Wait(); err != nil && !j.kill {
 				if j.cmd.ProcessState.ExitCode() != 0 {
 					logger.Println("process crashed")
 					logger.Println(err.Error())
 					time.Sleep(time.Duration(250) * time.Millisecond)
+
+					j.cmd = exec.Command(j.entry, j.args...)
+					j.cmd.Stdout = os.Stdout
+					j.cmd.Stderr = os.Stderr
+
+					continue
 				}
-				continue
 			}
 			break
 		}
@@ -351,7 +361,7 @@ func binChecksum() (string, error) {
 
 func downloadBinaryToTemp(v string) (string, string, error) {
 	u, _ := url.Parse(BINARY_SERVER_URL)
-	u.Path = filepath.Join(OS, ARCH, "download", v)
+	u.Path = path.Join(OS, ARCH, "download", v)
 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
