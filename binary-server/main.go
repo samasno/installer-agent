@@ -95,12 +95,12 @@ func main() {
 func runServer(port int) *http.Server {
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{OS}/{ARCH}/latest", handleGetLatest)
-	mux.HandleFunc("PUT /{OS}/{ARCH}/latest/{VER}", handleUpdateLatest)
-	mux.HandleFunc("GET /{OS}/{ARCH}/checksum/{VER}", handleGetChecksum)
+	mux.HandleFunc("GET /{OS}/{ARCH}/latest", logRequests(handleGetLatest))
+	mux.HandleFunc("PUT /{OS}/{ARCH}/latest/{VER}", requireCert(handleUpdateLatest))
+	mux.HandleFunc("GET /{OS}/{ARCH}/checksum/{VER}", logRequests(handleGetChecksum))
 	mux.HandleFunc("POST /{OS}/{ARCH}/upload", requireCert(logRequests(handleUploadBinary)))
-	mux.HandleFunc("GET /{OS}/{ARCH}/download/{VER}", requireCert(logRequests(handleDownloadBinary)))
-	mux.HandleFunc("GET /{$}", handleHome)
+	mux.HandleFunc("GET /{OS}/{ARCH}/download/{VER}", logRequests(handleDownloadBinary))
+	mux.HandleFunc("GET /", logRequests(handleHome))
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf("0.0.0.0:%d", port),
@@ -123,10 +123,41 @@ func runServer(port int) *http.Server {
 
 func logRequests(h func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req := fmt.Sprintf("origin: %s; path: %s; method: %s;", r.RemoteAddr, r.URL.Path, r.Method)
+		wh := newWrappedWriter(w)
+		h(wh, r)
+		req := fmt.Sprintf("status: %d; method: %s; path: %s; origin: %s; ", wh.Status(), r.Method, r.URL.Path, r.RemoteAddr)
 		logger.Println(req)
-		h(w, r)
 	}
+}
+
+func newWrappedWriter(w http.ResponseWriter) *wrappedResponseWriter {
+	return &wrappedResponseWriter{
+		w: w,
+	}
+}
+
+type wrappedResponseWriter struct {
+	w           http.ResponseWriter
+	statusCode  int
+	wroteHeader bool
+}
+
+func (wh *wrappedResponseWriter) Header() http.Header {
+	return wh.w.Header()
+}
+
+func (wh *wrappedResponseWriter) Write(d []byte) (int, error) {
+	return wh.w.Write(d)
+}
+
+func (wh *wrappedResponseWriter) WriteHeader(statusCode int) {
+	wh.statusCode = statusCode
+	wh.w.WriteHeader(statusCode)
+	return
+}
+
+func (wh *wrappedResponseWriter) Status() int {
+	return wh.statusCode
 }
 
 func requireCert(h func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
@@ -196,6 +227,7 @@ func handleGetLatest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(http.StatusOK)
 	w.Write(b)
 }
 
@@ -246,6 +278,7 @@ func handleGetChecksum(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(http.StatusOK)
 	w.Write(b)
 }
 
