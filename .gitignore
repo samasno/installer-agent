@@ -7,3 +7,5 @@ notes.txt
 *.csr
 *.pem
 *.cer
+files
+testapp
