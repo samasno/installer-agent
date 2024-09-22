@@ -34,16 +34,14 @@ func main() {
 		log.Fatalf("Error: Expected at least 2 arguments, got %d\n", len(os.Args))
 	}
 
-	flag.BoolVar(&HELP, "help", false, helpMessage)
 	flag.StringVar(&HOST, "host", "http://localhost:8080", "url for binary server")
 	flag.StringVar(&CERT, "cert", "", "path to cert file")
 	flag.Parse()
 
 	args := flag.Args()
 
-	if HELP {
-		fmt.Println(helpMessage)
-		return
+	if len(args) == 0 {
+		log.Fatal("args required")
 	}
 
 	cmd := args[0]
@@ -87,6 +85,9 @@ func uploadBinary(args []string) (string, error) {
 	}
 
 	OS, ARCH, err := getOsAndArch(f)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 
 	b := bytes.NewBuffer([]byte{})
 
@@ -124,6 +125,9 @@ func uploadBinary(args []string) (string, error) {
 	remote.Path = path.Join(remote.Path, OS, ARCH, "upload")
 
 	req, err := http.NewRequest(http.MethodPost, remote.String(), b)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 
 	req.Header.Set("Content-Type", mp.FormDataContentType())
 
@@ -171,6 +175,20 @@ func setLatest(args []string) (string, error) {
 	remote.Path = path.Join(OS, ARCH, "latest", VER)
 
 	req, err := http.NewRequest(http.MethodPut, remote.String(), strings.NewReader(""))
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	if CERT != "" {
+		cert, err := os.ReadFile(CERT)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+
+		base := base64.StdEncoding.EncodeToString(cert)
+
+		req.Header.Set("X-Client-Certificate", base)
+	}
 
 	c := http.Client{Timeout: time.Duration(5) * time.Second}
 
@@ -235,7 +253,3 @@ func checksumHex(r io.ReadSeeker) (string, error) {
 
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
-
-var helpMessage = `
-	help message here
-`

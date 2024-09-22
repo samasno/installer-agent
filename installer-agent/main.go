@@ -544,7 +544,6 @@ func findExecutable(name string, ext string, dirPath string, remove bool) (strin
 	if len(matches) == 0 {
 		logger.Printf("found no executables")
 		return "", nil
-		// return bin, nil
 	}
 
 	bin = matches[0]
