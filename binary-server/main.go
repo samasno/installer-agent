@@ -62,9 +62,9 @@ func main() {
 
 	srv := runServer(port)
 
-	k := make(chan os.Signal)
+	k := make(chan os.Signal, 5)
 
-	signal.Notify(k, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGINT)
+	signal.Notify(k, syscall.SIGTERM, syscall.SIGINT)
 
 	<-k
 
@@ -137,9 +137,8 @@ func newWrappedWriter(w http.ResponseWriter) *wrappedResponseWriter {
 }
 
 type wrappedResponseWriter struct {
-	w           http.ResponseWriter
-	statusCode  int
-	wroteHeader bool
+	w          http.ResponseWriter
+	statusCode int
 }
 
 func (wh *wrappedResponseWriter) Header() http.Header {
@@ -153,7 +152,6 @@ func (wh *wrappedResponseWriter) Write(d []byte) (int, error) {
 func (wh *wrappedResponseWriter) WriteHeader(statusCode int) {
 	wh.statusCode = statusCode
 	wh.w.WriteHeader(statusCode)
-	return
 }
 
 func (wh *wrappedResponseWriter) Status() int {
@@ -307,6 +305,17 @@ func handleUploadBinary(w http.ResponseWriter, r *http.Request) {
 	checksum := r.FormValue("checksum")
 	version := r.FormValue("version")
 	isLatest := r.FormValue("latest")
+
+	_, err = os.Stat(filepath.Join(FILES_DIR, OS, ARCH, "bin", version))
+	if err != nil && !os.IsNotExist(err) {
+		replyMessage(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err == nil {
+		replyMessage(w, http.StatusUnauthorized, "version already exists")
+		return
+	}
 
 	f, _, err := r.FormFile("binary")
 	if err != nil {
