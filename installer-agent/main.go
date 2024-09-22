@@ -132,10 +132,14 @@ func main() {
 		panic(err.Error())
 	}
 
-	RUNNING, err := RunJob(OS, CMD...)
-	if err != nil {
-		log.Println("failed initial attempt to run, there may be no binary present")
-		log.Println(err.Error())
+	var RUNNING *Job
+
+	if BIN_NAME != "" {
+		RUNNING, err = RunJob(OS, CMD...)
+		if err != nil {
+			log.Println("failed initial attempt to run, there may be no binary present")
+			log.Println(err.Error())
+		}
 	}
 
 	for {
@@ -152,7 +156,7 @@ func main() {
 
 		CMD = getCommand(BIN_DIR, newBin, FLAGS, ARGS)
 
-		oldBin := BIN_PATH
+		oldBin := BIN_NAME
 		BIN_NAME = newBin
 		BIN_PATH = path.Join(BIN_DIR, BIN_NAME)
 
@@ -162,10 +166,12 @@ func main() {
 			logger.Fatal(err.Error())
 		}
 
-		err = os.Remove(oldBin)
-		if err != nil {
-			logger.Println("Failed to remove old binary")
-			logger.Println(err.Error())
+		if oldBin != "" {
+			err = os.Remove(oldBin)
+			if err != nil {
+				logger.Println("Failed to remove old binary")
+				logger.Println(err.Error())
+			}
 		}
 
 		time.Sleep(time.Duration(5) * time.Second)
@@ -275,7 +281,7 @@ func (j *Job) Run() {
 	j.cmd = exec.Command(j.entry, j.args...)
 	j.cmd.Stdout = os.Stdout
 	j.cmd.Stderr = os.Stderr
-	println(j.entry)
+
 	err := j.cmd.Start()
 	if err != nil {
 		log.Println("failed to start job process")
