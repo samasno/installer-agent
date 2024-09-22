@@ -18,24 +18,30 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 )
 
 var BINARY_SERVER_URL string
+
 var OS = "linux"
 var ARCH = "ELFCLASS64"
+var LIN_EXT = ".bin"
+var WIN_EXT = ".exe"
+var APP_NAME = "app"
+var AGENT_NAME = "installer"
 var BIN_DIR string
 var BIN_PATH string
-var CURRENT_PROCESS exec.Cmd
 var BIN_NAME string
-var DEFAULT_BIN_NAME = "installer-agent"
-var WINDOWS_BIN_NAME = "installer-agent.exe"
-var PID int
-var CMD = []string{}
+
 var OUT string
+
+var CMD = []string{}
+var FLAGS flagArray
+var ARGS flagArray
+var EXT string
 
 var logger *log.Logger
 
@@ -51,25 +57,23 @@ func (f *flagArray) String() string {
 }
 
 func main() {
-	var childArgs flagArray
-	var childFlags flagArray
-
-	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current user directory.")
+	var logsOut string
+	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current directory")
 	flag.StringVar(&BINARY_SERVER_URL, "host", "http://localhost:8080/", "url for binary server")
-	flag.StringVar(&OUT, "out", "", "path to log file")
-	flag.Var(&childArgs, "arg", "args to pass to child process.")
-	flag.Var(&childFlags, "flag", "flags to be passed to child. should be passed as key value pair \"key=value\". flags will be passed before any positional arguments")
+	flag.Var(&ARGS, "arg", "args to pass to child process.")
+	flag.Var(&FLAGS, "flag", "flags to be passed to child. should be passed as key value pair \"key=value\". flags will be passed before any positional arguments")
+	flag.StringVar(&logsOut, "out", "", "path to log file. writes to std out by default")
 
 	flag.Parse()
 
 	logFlags := log.Ldate | log.Ltime
 	logPrefix := fmt.Sprintf("PID %d  ", os.Getpid())
-	if OUT == "" {
+	if logsOut == "" {
 		logger = log.New(os.Stdout, logPrefix, logFlags)
 	} else {
-		logFile, err := os.OpenFile(OUT, os.O_CREATE|os.O_RDWR, 0774)
+		logFile, err := os.OpenFile(logsOut, os.O_CREATE|os.O_RDWR, 0774)
 		if err != nil {
-			log.Printf("failed to open log file \"%s\"", OUT)
+			log.Printf("failed to open log file \"%s\"", logsOut)
 			log.Fatal(err.Error())
 		}
 		logger = log.New(logFile, logPrefix, logFlags)
@@ -82,34 +86,43 @@ func main() {
 	}
 
 	if BIN_DIR == "" {
-		BIN_DIR, err = os.Getwd()
+		wd, err := os.Getwd()
 		if err != nil {
-			panic("couldn't find working directory")
+			log.Println("failed to get working directory")
+			log.Fatal(err.Error())
 		}
+
+		BIN_DIR = wd
+	}
+
+	err = os.Chdir(BIN_DIR)
+	if err != nil {
+		log.Println("could not access work directory")
+		log.Fatal(err.Error())
 	}
 
 	switch OS {
 	case "windows":
-		BIN_NAME = WINDOWS_BIN_NAME
+		BIN_NAME, err = findExecutable(APP_NAME, WIN_EXT, "./", true)
+		EXT = WIN_EXT
 	case "linux", "darwin":
-		BIN_NAME = DEFAULT_BIN_NAME
+		BIN_NAME, err = findExecutable(APP_NAME, LIN_EXT, "./", true)
+		EXT = LIN_EXT
 	default:
-		BIN_NAME = DEFAULT_BIN_NAME
-		logger.Printf("operating system \"%s\" might not be supported", OS)
+		BIN_NAME, err = findExecutable(APP_NAME, LIN_EXT, "./", true)
+	}
+
+	println(BIN_NAME)
+	if err != nil && !os.IsNotExist(err) {
+		logger.Println("error locating executable")
+		logger.Fatal(err.Error())
 	}
 
 	BIN_PATH = filepath.Join(BIN_DIR, BIN_NAME)
 
-	CMD = append(CMD, BIN_PATH)
+	CMD = getCommand(BIN_NAME)
 
-	cfs := []string{}
-	for _, f := range childFlags {
-		cfs = append(cfs, "--"+f)
-	}
-
-	CMD = append(CMD, cfs...)
-
-	CMD = append(CMD, childArgs...)
+	fmt.Printf("%v\n", CMD)
 
 	_, err = url.Parse(BINARY_SERVER_URL)
 	if err != nil {
@@ -122,10 +135,14 @@ func main() {
 		panic(err.Error())
 	}
 
-	var RUNNING *Job
+	RUNNING, err := RunJob(CMD...)
+	if err != nil {
+		log.Println("failed initial attempt to run, there may be no binary present")
+		log.Println(err.Error())
+	}
 
 	for {
-		updated, err := stayUpdated()
+		updated, newBin, err := stayUpdated()
 		if err != nil {
 			logger.Println("error fetching update")
 			logger.Println(err.Error())
@@ -136,28 +153,44 @@ func main() {
 			continue
 		}
 
+		CMD = getCommand(newBin)
+
+		oldBin := BIN_PATH
+		BIN_NAME = newBin
+		BIN_PATH = path.Join(BIN_DIR, BIN_NAME)
+
 		RUNNING, err = SwapNewJob(RUNNING, CMD...)
 		if err != nil {
 			logger.Println("Failed to restart running process")
 			logger.Fatal(err.Error())
 		}
+
+		err = os.Remove(oldBin)
+		if err != nil {
+			logger.Println("Failed to remove old binary")
+			logger.Println(err.Error())
+		}
+
+		time.Sleep(time.Duration(5) * time.Second)
+		continue
+
 	}
 }
 
-func stayUpdated() (bool, error) {
+func stayUpdated() (bool, string, error) {
 	latest, latestChecksum, err := checkForUpdate()
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	if latest == "" {
 		logger.Println("no updates")
-		return false, nil
+		return false, "", nil
 	}
 
 	tmpPath, tmpChecksum, err := downloadBinaryToTemp(latest)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	logger.Printf("download new binary to %s checksum %s\n", tmpPath, tmpChecksum)
@@ -168,24 +201,27 @@ func stayUpdated() (bool, error) {
 		} else {
 			logger.Printf("removed file %s\n", tmpPath)
 		}
-		return false, errors.New("checksum of downloaded binary does not match latest version")
+		return false, "", errors.New("checksum of downloaded binary does not match latest version")
 	}
 
 	logger.Printf("checksums matched, moving %s to %s\n", tmpPath, BIN_PATH)
-	err = os.Rename(tmpPath, BIN_PATH)
+
+	newBin := fmt.Sprintf("%s%s", filepath.Base(tmpPath), EXT)
+	newPath := path.Join(BIN_DIR, newBin)
+	err = os.Rename(tmpPath, newPath)
 	if err != nil {
-		logger.Println("faile to rename new binary file")
-		return false, err
+		logger.Println("failed to rename new binary file")
+		return false, "", err
 	}
 
-	err = os.Chmod(BIN_PATH, 0777)
+	err = os.Chmod(newPath, 0777)
 	if err != nil {
 		logger.Println("failed to update permissions for new binary")
-		return false, err
+		return false, "", err
 	}
 
 	logger.Println("binary succesfully updated")
-	return true, nil
+	return true, newBin, nil
 }
 
 type Job struct {
@@ -240,6 +276,7 @@ func (j *Job) Run() {
 	j.cmd = exec.Command(j.entry, j.args...)
 	j.cmd.Stdout = os.Stdout
 	j.cmd.Stderr = os.Stderr
+	println(j.entry)
 	err := j.cmd.Start()
 	if err != nil {
 		log.Println("failed to start job process")
@@ -278,14 +315,30 @@ func (j *Job) Stop() error {
 	}
 
 	j.kill = true
-	err := j.cmd.Process.Signal(syscall.SIGTERM)
-	if err != nil {
-		return err
+
+	if OS == "windows" {
+		cmd := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(j.cmd.Process.Pid))
+		err := cmd.Run()
+		if err != nil {
+			log.Println("failed to kill windows predecessor")
+			log.Fatal(err.Error())
+		}
+	} else {
+		err := j.cmd.Process.Signal(os.Interrupt)
+		if err != nil {
+			return err
+		}
 	}
+
+	time.Sleep(time.Duration(2) * 3)
 
 	<-j.Ok
 
 	return nil
+}
+
+func (j *Job) Entry() string {
+	return j.entry
 }
 
 func checkForUpdate() (string, string, error) {
@@ -341,7 +394,7 @@ func fetch(u string) (string, error) {
 }
 
 func binChecksum() (string, error) {
-	bin, err := os.Open(BIN_PATH)
+	bin, err := os.Open(BIN_NAME)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -378,7 +431,7 @@ func downloadBinaryToTemp(v string) (string, string, error) {
 
 	dir := os.TempDir()
 
-	tmp, err := os.CreateTemp(dir, "installer-temp-bin")
+	tmp, err := os.CreateTemp(dir, "app-")
 	if err != nil {
 		return "", "", err
 	}
@@ -442,6 +495,9 @@ func getOsAndArch() (string, string, error) {
 	}
 
 	f, err = os.Open(x)
+	if err != nil {
+		return "", "", err
+	}
 	mac, err := macho.NewFile(f)
 	if err != nil {
 		logger.Println(err.Error())
@@ -452,5 +508,56 @@ func getOsAndArch() (string, string, error) {
 		return "darwin", mac.Cpu.String(), nil
 	}
 
-	return "", "", errors.New("Unsupported operating system")
+	return "", "", errors.New("unsupported operating system")
+}
+
+func findExecutable(name string, ext string, dirPath string, remove bool) (string, error) {
+	bin := ""
+	rgxstr := fmt.Sprintf(`^%s[\w\-\.]+%s$`, name, ext)
+	rgx, err := regexp.Compile(rgxstr)
+	if err != nil {
+		return bin, err
+	}
+
+	dir, err := os.ReadDir(dirPath)
+	if err != nil {
+		return bin, err
+	}
+
+	matches := []string{}
+	for _, de := range dir {
+		if rgx.Match([]byte(de.Name())) {
+			matches = append(matches, de.Name())
+		}
+
+	}
+
+	fmt.Printf("%v\n", matches)
+	if len(matches) == 0 {
+		logger.Printf("found no executables")
+		return "", nil
+		// return bin, nil
+	}
+
+	bin = matches[0]
+
+	if len(matches) > 1 && remove {
+		for _, m := range matches[1:] {
+			err := os.RemoveAll(path.Join(dirPath, m))
+			if err != nil {
+				logger.Printf("failed to remove %s", m)
+			}
+		}
+	}
+
+	return bin, nil
+}
+
+func getCommand(bin string) []string {
+	command := []string{}
+	binPath := filepath.Join(BIN_DIR, bin)
+	command = append(command, binPath)
+	command = append(command, FLAGS...)
+	command = append(command, ARGS...)
+	return command
 }
