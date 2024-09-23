@@ -95,8 +95,8 @@ func main() {
 	if BIN_DIR == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			log.Println("failed to get working directory")
-			log.Fatal(err.Error())
+			logger.Println("failed to get working directory")
+			logger.Fatal(err.Error())
 		}
 
 		BIN_DIR = wd
@@ -104,8 +104,8 @@ func main() {
 
 	err = os.Chdir(BIN_DIR)
 	if err != nil {
-		log.Println("could not access work directory")
-		log.Fatal(err.Error())
+		logger.Println("could not access work directory")
+		logger.Fatal(err.Error())
 	}
 
 	switch OS {
