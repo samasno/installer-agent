@@ -14,7 +14,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
-		w.Write([]byte("home page 3"))
+		w.Write([]byte("home 2"))
 	})
 
 	srv := http.Server{
@@ -32,8 +32,8 @@ func main() {
 		}
 	}()
 
-	k := make(chan os.Signal)
-	signal.Notify(k, syscall.SIGTERM)
+	k := make(chan os.Signal, 5)
+	signal.Notify(k, syscall.SIGTERM, syscall.SIGINT, os.Interrupt)
 
 	<-k
 
