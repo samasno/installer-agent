@@ -141,6 +141,7 @@ func main() {
 
 	var RUNNING *Job
 
+	// run if an available executable was found
 	if BIN_NAME != "" {
 		RUNNING, err = RunJob(OS, CMD...)
 		if err != nil {
@@ -214,6 +215,7 @@ func stayUpdated(osys, arch, host, bin, dir, ext string) (bool, string, error) {
 		return false, "", errors.New("checksum of downloaded binary does not match latest version")
 	}
 
+	// use random name provided by temp to prevent issues with windows file lock system
 	newBin := fmt.Sprintf("%s%s", filepath.Base(tmpPath), ext)
 	newPath := path.Join(dir, newBin)
 	logger.Printf("checksums matched, moving %s to %s\n", tmpPath, newPath)
@@ -300,6 +302,7 @@ func (j *Job) Run() {
 				break
 			}
 
+			// restart app if it crashes unexpectedly with some throttling
 			if err := j.cmd.Wait(); err != nil && !j.kill {
 				if j.cmd.ProcessState.ExitCode() != 0 {
 					logger.Println("process crashed")
@@ -331,6 +334,7 @@ func (j *Job) Stop() error {
 		return nil
 	}
 
+	// signals not working on windows, taskkill will not shutdown gracefully
 	if j.os == "windows" {
 		cmd := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(j.cmd.Process.Pid))
 		err := cmd.Run()
@@ -339,6 +343,7 @@ func (j *Job) Stop() error {
 			log.Fatal(err.Error())
 		}
 	} else {
+		// target application should explicitly handle interrupts
 		err := j.cmd.Process.Signal(os.Interrupt)
 		if err != nil {
 			return err
@@ -408,6 +413,7 @@ func fetch(u string) (string, error) {
 	return string(data), nil
 }
 
+// versions are compated by local vs remote checksum
 func binChecksum(name string) (string, error) {
 	bin, err := os.Open(name)
 	if err != nil {
@@ -446,6 +452,7 @@ func downloadBinaryToTemp(osys, arch, host, v string) (string, string, error) {
 
 	dir := os.TempDir()
 
+	// write to temp dir first for atomic write later
 	tmp, err := os.CreateTemp(dir, "app-")
 	if err != nil {
 		return "", "", err
@@ -478,6 +485,7 @@ func checksum(r io.ReadSeeker) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// use os and arch to fetch correct binary. stored in server by go constants from elf, macho, pe packages
 func getOsAndArch() (string, string, error) {
 	x, err := os.Executable()
 	if err != nil {
@@ -526,6 +534,7 @@ func getOsAndArch() (string, string, error) {
 	return "", "", errors.New("unsupported operating system")
 }
 
+// check if a binary for target application is available and remove any extras
 func findExecutable(name string, ext string, dirPath string, remove bool) (string, error) {
 	bin := ""
 	rgxstr := fmt.Sprintf(`^%s[\w\-\.]+%s$`, name, ext)

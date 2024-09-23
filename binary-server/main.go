@@ -64,7 +64,7 @@ func main() {
 		verifyOptions = &opts
 	}
 
-	srv := runServer(port, FILES_DIR, verifyOptions)
+	srv := newServer(port, FILES_DIR, verifyOptions)
 	if err := srv.ListenAndServe(); err != nil {
 		if err == http.ErrServerClosed {
 			logger.Println("server closed")
@@ -76,7 +76,7 @@ func main() {
 	}
 }
 
-func runServer(port int, filesDir string, verifyOptions *x509.VerifyOptions) *http.Server {
+func newServer(port int, filesDir string, verifyOptions *x509.VerifyOptions) *http.Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{OS}/{ARCH}/latest", chainMiddleware(handleGetLatest(filesDir), logRequests))
@@ -204,6 +204,7 @@ func handleUploadBinary(files string) http.HandlerFunc {
 		version := r.FormValue("version")
 		isLatest := r.FormValue("latest")
 
+		// check if this version already exists to prevent update of existing version
 		_, err = os.Stat(filepath.Join(files, OS, ARCH, "bin", version))
 		if err != nil && !os.IsNotExist(err) {
 			replyMessage(w, http.StatusInternalServerError, err.Error())
@@ -231,6 +232,7 @@ func handleUploadBinary(files string) http.HandlerFunc {
 			return
 		}
 
+		// first write to tempfile for atomic write later
 		tmpBinary, tmpBinaryPath, err := copyToTempFile(f)
 		if err != nil {
 			replyMessage(w, http.StatusInternalServerError, err.Error())
@@ -275,6 +277,7 @@ func handleUploadBinary(files string) http.HandlerFunc {
 		destChecksum := filepath.Join(destDir, "checksum", version)
 		destLatest := filepath.Join(destDir, "latest")
 
+		// using rename for atomic write
 		err = os.Rename(tmpBinaryPath, destBinFile)
 		if err != nil {
 			replyMessage(w, http.StatusInternalServerError, err.Error())
@@ -322,6 +325,7 @@ func newWrappedWriter(w http.ResponseWriter) *wrappedResponseWriter {
 	}
 }
 
+// wrapper to retrieve response data after written by endpoint
 type wrappedResponseWriter struct {
 	w          http.ResponseWriter
 	statusCode int
@@ -353,6 +357,7 @@ func chainMiddleware(f http.HandlerFunc, mws ...middleware) http.HandlerFunc {
 
 type middleware func(http.HandlerFunc) http.HandlerFunc
 
+// certs/options used for auth in request header, not tls
 func getVerifyOptions(cafile string) x509.VerifyOptions {
 	caPem, err := os.ReadFile(cafile)
 	if err != nil {
