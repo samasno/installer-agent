@@ -194,7 +194,7 @@ func handleUploadBinary(files string) http.HandlerFunc {
 		OS := r.PathValue("OS")
 		ARCH := r.PathValue("ARCH")
 
-		err := r.ParseMultipartForm(10 << 50)
+		err := r.ParseMultipartForm(20 * 1024 * 1024)
 		if err != nil {
 			replyMessage(w, http.StatusInternalServerError, err.Error())
 			return
