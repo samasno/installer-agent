@@ -124,12 +124,12 @@ func main() {
 	_, err = url.Parse(BINARY_SERVER_URL)
 	if err != nil {
 		logger.Println(err.Error())
-		panic(err.Error())
+		log.Fatal(err.Error())
 	}
 
 	err = os.MkdirAll(BIN_DIR, 0755)
 	if err != nil {
-		panic(err.Error())
+		log.Fatal(err.Error())
 	}
 
 	var RUNNING *Job
