@@ -307,7 +307,7 @@ func (j *Job) Run() {
 				if j.cmd.ProcessState.ExitCode() != 0 {
 					logger.Println("process crashed")
 					logger.Println(err.Error())
-					time.Sleep(time.Duration(250) * time.Millisecond)
+					time.Sleep(time.Duration(1) * time.Second)
 
 					j.cmd = exec.Command(j.entry, j.args...)
 					j.cmd.Stdout = os.Stdout
