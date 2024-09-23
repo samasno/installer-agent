@@ -35,6 +35,7 @@ var AGENT_NAME = "installer"
 var BIN_DIR string
 var BIN_PATH string
 var BIN_NAME string
+var INTERVAL_MINUTES = 60
 
 var OUT string
 
@@ -58,13 +59,19 @@ func (f *flagArray) String() string {
 
 func main() {
 	var logsOut string
+	var interval int
 	flag.StringVar(&BIN_DIR, "dir", "", "path to directory where binary file is or will be stored. defaults to current directory")
 	flag.StringVar(&BINARY_SERVER_URL, "host", "http://localhost:8080/", "url for binary server")
 	flag.Var(&ARGS, "arg", "args to pass to child process.")
 	flag.Var(&FLAGS, "flag", "flags to be passed to child. should be passed as key value pair \"key=value\". flags will be passed before any positional arguments")
 	flag.StringVar(&logsOut, "out", "", "path to log file. writes to std out by default")
+	flag.IntVar(&interval, "interval", 0, "interval in minutes that updates will be checked. defaults to 60 minutes")
 
 	flag.Parse()
+
+	if interval != 0 {
+		INTERVAL_MINUTES = interval
+	}
 
 	logFlags := log.Ldate | log.Ltime
 	logPrefix := fmt.Sprintf("PID %d  ", os.Getpid())
@@ -150,7 +157,7 @@ func main() {
 		}
 
 		if !updated {
-			time.Sleep(time.Duration(5) * time.Second)
+			time.Sleep(time.Duration(INTERVAL_MINUTES) * time.Minute)
 			continue
 		}
 
@@ -174,7 +181,7 @@ func main() {
 			}
 		}
 
-		time.Sleep(time.Duration(5) * time.Second)
+		time.Sleep(time.Duration(INTERVAL_MINUTES) * time.Minute)
 		continue
 
 	}
