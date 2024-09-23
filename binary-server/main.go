@@ -70,7 +70,7 @@ func main() {
 			logger.Println("server closed")
 			os.Exit(0)
 		}
-
+		logger.Println(err.Error())
 		logger.Println("server crashed")
 		os.Exit(1)
 	}
